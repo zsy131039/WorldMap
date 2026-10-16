@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>世界历史巡游地图</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden;
+    font-family: 'Microsoft YaHei', sans-serif;
+    background: #0a1929; color: #e0e0e0; }
+  #map { display: block; cursor: grab; }
+  #map.dragging { cursor: grabbing; }
+
+  .panel {
+    position: fixed;
+    background: rgba(16, 28, 48, 0.95);
+    border: 1px solid #2a4a6a;
+    border-radius: 8px;
+    padding: 16px;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  }
+
+  #infoPanel {
+    top: 20px; right: 20px; width: 300px;
+    max-height: 60vh; overflow-y: auto; display: none;
+  }
+  #infoPanel h2 { font-size: 18px; margin-bottom: 12px; color: #4fc3f7; }
+  #infoPanel .row { display: flex; justify-content: space-between;
+    padding: 6px 0; border-bottom: 1px solid #1a3a5a; font-size: 14px; }
+  #infoPanel .label { color: #80a0c0; }
+
+  #timeline {
+    bottom: 20px; left: 50%; transform: translateX(-50%);
+    width: 70%; max-width: 700px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  #timeline input[type=range] {
+    flex: 1; -webkit-appearance: none;
+    height: 6px; background: #1a3a5a;
+    border-radius: 3px; outline: none;
+  }
+  #timeline input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 20px; height: 20px;
+    background: #4fc3f7; border-radius: 50%; cursor: pointer;
+    box-shadow: 0 0 10px rgba(79,195,247,0.5);
+  }
+  #yearLabel { font-size: 18px; font-weight: bold;
+    color: #4fc3f7; min-width: 90px; text-align: center; }
+
+  #legend { top: 20px; left: 20px; padding: 12px 16px; }
+  #legend .item { display: flex; align-items: center; gap: 8px;
+    margin: 6px 0; font-size: 14px; }
+  #legend .dot { width: 20px; height: 3px; border-radius: 2px; }
+
+  #controls { bottom: 20px; left: 20px;
+    display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+  #controls button {
+    width: 36px; height: 36px; background: #1a3a5a;
+    border: 1px solid #2a4a6a; color: #4fc3f7;
+    border-radius: 6px; font-size: 18px; cursor: pointer;
+    transition: background 0.2s;
+  }
+  #controls button:hover { background: #2a4a6a; }
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+
+<div id="legend" class="panel">
+  <div style="font-size:14px;color:#80a0c0;margin-bottom:8px;">图例</div>
+  <div class="item"><div class="dot" style="background:#ff6b35;"></div>丝绸之路</div>
+  <div class="item"><div class="dot" style="background:#4fc3f7;"></div>郑和下西洋</div>
+  <div class="item"><div class="dot" style="background:#ab47bc;"></div>亚历山大东征</div>
+  <div class="item"><div class="dot" style="background:#ffb300;"></div>国家/城市</div>
+</div>
+
+<div id="controls" class="panel">
+  <button onclick="zoomIn()">+</button>
+  <button onclick="zoomOut()">−</button>
+  <button onclick="resetView()">⌂</button>
+</div>
+
+<div id="infoPanel" class="panel"></div>
+
+<div id="timeline" class="panel">
+  <input type="range" id="yearSlider" min="-2000" max="2024" value="2024" step="1">
+  <div id="yearLabel">2024年</div>
+</div>
+
+<script>
+// ============================================================
+// 1. 数据层（实际项目请替换为完整的 Natural Earth GeoJSON）
+// ============================================================
+
+// --- 极简世界大陆轮廓：[经度, 纬度] 数组 ---
+const LANDMASSES = [
+  // 非洲
+  [[-17,21],[-17,15],[-16,12],[-13,9],[-8,4],[9,4],[9,-1],[12,-6],[13,-17],
+   [18,-22],[20,-35],[28,-33],[32,-29],[40,-16],[41,-2],[43,12],[33,28],
+   [32,31],[25,32],[11,33],[-6,36],[-10,36],[-17,21]],
+  // 欧洲
+  [[-10,36],[-9,43],[-2,43],[3,43],[5,51],[8,54],[10,58],[5,61],[12,66],
+   [20,70],[30,70],[40,66],[40,48],[28,41],[15,38],[12,45],[8,44],[3,43],[-10,36]],
+  // 亚洲
+  [[30,70],[60,70],[100,75],[140,72],[160,70],[170,65],[150,60],[140,45],
+   [130,35],[122,30],[110,20],[100,10],[95,5],[80,8],[70,22],[55,25],
+   [45,30],[40,40],[40,48],[30,70]],
+  // 北美洲
+  [[-170,70],[-140,70],[-120,65],[-100,70],[-80,70],[-60,60],[-55,50],
+   [-70,40],[-80,30],[-97,26],[-105,30],[-125,40],[-125,50],[-140,60],[-170,70]],
+  // 南美洲
+  [[-80,10],[-60,10],[-50,0],[-35,-5],[-40,-20],[-55,-30],[-70,-50],
+   [-75,-50],[-72,-30],[-80,-10],[-80,10]],
+  // 澳大利亚
+  [[115,-20],[130,-12],[145,-15],[153,-28],[150,-38],[140,-38],[120,-34],[115,-20]],
+  // 南极洲
+  [[-180,-70],[180,-70],[180,-85],[-180,-85],[-180,-70]],
+  // 格陵兰
+  [[-45,60],[-20,60],[-20,80],[-45,80],[-45,60]]
+];
+
+// --- 历史路线 ---
+const ROUTES = [
+  {
+    name: '丝绸之路', color: '#ff6b35',
+    startYear: -130, endYear: 1450,
+    points: [
+      [108.9,34.3],[103.8,36.1],[94.7,40.1],[75.9,39.5],
+      [66.9,39.6],[51.4,35.7],[44.4,33.3],[29.0,41.0],[12.5,41.9]
+    ]
+  },
+  {
+    name: '郑和下西洋', color: '#4fc3f7',
+    startYear: 1405, endYear: 1433,
+    points: [
+      [118.8,32.0],[118.6,24.9],[109.2,13.8],[106.8,-6.2],
+      [102.2,2.2],[79.9,6.9],[75.8,11.3],[56.3,27.2],
+      [45.0,12.8],[40.1,-2.2]
+    ]
+  },
+  {
+    name: '亚历山大东征', color: '#ab47bc',
+    startYear: -334, endYear: -323,
+    points: [
+      [22.9,40.6],[26.5,40.2],[30.7,36.9],[35.5,33.9],
+      [31.2,30.0],[29.9,31.2],[44.4,33.3],[69.2,34.5],[72.8,32.5]
+    ]
+  }
+];
+
+// --- 国家/城市数据 ---
+const NATIONS = [
+  { name:'中国',       lon:116.4, lat:39.9,  population:'14.1亿', language:'汉语',           status:'发展中国家', founded:-2070, capital:'北京' },
+  { name:'印度',       lon:77.2,  lat:28.6,  population:'14.2亿', language:'印地语/英语',    status:'发展中国家', founded:1947,  capital:'新德里' },
+  { name:'埃及',       lon:31.2,  lat:30.0,  population:'1.1亿',  language:'阿拉伯语',       status:'发展中国家', founded:-3150, capital:'开罗' },
+  { name:'希腊',       lon:23.7,  lat:37.9,  population:'1040万', language:'希腊语',         status:'发达国家',   founded:-800,  capital:'雅典' },
+  { name:'意大利',     lon:12.5,  lat:41.9,  population:'5900万', language:'意大利语',       status:'发达国家',   founded:1861,  capital:'罗马' },
+  { name:'土耳其',     lon:29.0,  lat:41.0,  population:'8500万', language:'土耳其语',       status:'发展中国家', founded:1923,  capital:'安卡拉' },
+  { name:'伊朗',       lon:51.4,  lat:35.7,  population:'8800万', language:'波斯语',         status:'发展中国家', founded:-550,  capital:'德黑兰' },
+  { name:'沙特阿拉伯', lon:46.7,  lat:24.7,  population:'3600万', language:'阿拉伯语',       status:'发展中国家', founded:1932,  capital:'利雅得' },
+  { name:'印度尼西亚', lon:106.8, lat:-6.2,  population:'2.8亿',  language:'印尼语',         status:'发展中国家', founded:1945,  capital:'雅加达' },
+  { name:'马来西亚',   lon:102.2, lat:2.2,   population:'3400万', language:'马来语',         status:'发展中国家', founded:1957,  capital:'吉隆坡' },
+  { name:'肯尼亚',     lon:40.1,  lat:-2.2,  population:'5400万', language:'斯瓦希里语/英语',status:'发展中国家', founded:1963,  capital:'内罗毕' },
+  { name:'英国',       lon:-0.1,  lat:51.5,  population:'6700万', language:'英语',           status:'发达国家',   founded:1707,  capital:'伦敦' },
+  { name:'法国',       lon:2.3,   lat:48.9,  population:'6800万', language:'法语',           status:'发达国家',   founded:843,   capital:'巴黎' },
+  { name:'美国',       lon:-77.0, lat:38.9,  population:'3.3亿',  language:'英语',           status:'发达国家',   founded:1776,  capital:'华盛顿' },
+  { name:'巴西',       lon:-47.9, lat:-15.8, population:'2.2亿',  language:'葡萄牙语',       status:'发展中国家', founded:1822,  capital:'巴西利亚' },
+  { name:'俄罗斯',     lon:37.6,  lat:55.8,  population:'1.4亿',  language:'俄语',           status:'发达国家',   founded:1991,  capital:'莫斯科' },
+  { name:'日本',       lon:139.7, lat:35.7,  population:'1.25亿', language:'日语',           status:'发达国家',   founded:-660,  capital:'东京' },
+  { name:'澳大利亚',   lon:149.1, lat:-35.3, population:'2600万', language:'英语',           status:'发达国家',   founded:1901,  capital:'堪培拉' }
+];
+
+// ============================================================
+// 2. 投影（等距圆柱投影）
+// ============================================================
+const WORLD_W = 360;   // 对应 360° 经度
+const WORLD_H = 180;   // 对应 180° 纬度
+
+function project(lon, lat) {
+  return [lon + 180, 90 - lat];   // 世界坐标：x∈[0,360], y∈[0,180]
+}
+
+// ============================================================
+// 3. 画布与视图
+// ============================================================
+const canvas = document.getElementById('map');
+const ctx = canvas.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+
+let view = { scale: 1, offsetX: 0, offsetY: 0 };
+
+function resize() {
+  canvas.width  = window.innerWidth  * dpr;
+  canvas.height = window.innerHeight * dpr;
+  canvas.style.width  = window.innerWidth  + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  render();
+}
+
+function fitWorld() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const s = Math.min(w / WORLD_W, h / WORLD_H) * 0.95;
+  view.scale = s;
+  view.offsetX = (w - WORLD_W * s) / 2;
+  view.offsetY = (h - WORLD_H * s) / 2;
+}
+
+function resetView() { fitWorld(); render(); }
+
+// 经纬度 → 屏幕坐标
+function toScreen(lon, lat) {
+  const [wx, wy] = project(lon, lat);
+  return [wx * view.scale + view.offsetX, wy * view.scale + view.offsetY];
+}
+
+// ============================================================
+// 4. 渲染
+// ============================================================
+let hoveredNation  = null;
+let selectedNation = null;
+let currentYear    = 2024;
+
+function render() {
+  const W = window.innerWidth, H = window.innerHeight;
+
+  ctx.save();
+  ctx.scale(dpr, dpr);
+
+  // 海洋背景
+  ctx.fillStyle = '#0a1929';
+  ctx.fillRect(0, 0, W, H);
+
+  drawGrid();
+  drawLandmasses();
+  drawRoutes();
+  drawNations();
+
+  ctx.restore();
+}
+
+function drawGrid() {
+  ctx.strokeStyle = 'rgba(42, 74, 106, 0.4)';
+  ctx.lineWidth = 1;
+
+  for (let lon = -180; lon <= 180; lon += 30) {
+    const [x1, y1] = toScreen(lon, 90);
+    const [x2, y2] = toScreen(lon, -90);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+  for (let lat = -90; lat <= 90; lat += 30) {
+    const [x1, y1] = toScreen(-180, lat);
+    const [x2, y2] = toScreen(180, lat);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+  // 赤道
+  ctx.strokeStyle = 'rgba(79, 195, 247, 0.35)';
+  ctx.lineWidth = 1.5;
+  const [ex1, ey1] = toScreen(-180, 0);
+  const [ex2, ey2] = toScreen(180, 0);
+  ctx.beginPath(); ctx.moveTo(ex1, ey1); ctx.lineTo(ex2, ey2); ctx.stroke();
+}
+
+function drawLandmasses() {
+  ctx.fillStyle = '#1a3a5a';
+  ctx.strokeStyle = '#2a5a8a';
+  ctx.lineWidth = 1;
+
+  for (const poly of LANDMASSES) {
+    ctx.beginPath();
+    for (let i = 0; i < poly.length; i++) {
+      const [x, y] = toScreen(poly[i][0], poly[i][1]);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+function drawRoutes() {
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (const route of ROUTES) {
+    if (currentYear < route.startYear) continue;
+
+    // 计算绘制进度（路线随时间逐渐延伸）
+    let progress = 1;
+    if (currentYear < route.endYear) {
+      progress = (currentYear - route.startYear) / (route.endYear - route.startYear);
+      progress = Math.max(0.05, Math.min(1, progress));
+    }
+    const drawnSegments = progress * (route.points.length - 1);
+
+    // 外发光
+    ctx.strokeStyle = route.color;
+    ctx.globalAlpha = 0.25;
+    ctx.lineWidth = 7;
+    strokeRoutePath(route.points, drawnSegments);
+
+    // 主线
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 2.5;
+    strokeRoutePath(route.points, drawnSegments);
+
+    // 途经点
+    for (let i = 0; i < route.points.length; i++) {
+      if (i > drawnSegments) break;
+      const [x, y] = toScreen(route.points[i][0], route.points[i][1]);
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = route.color;
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function strokeRoutePath(pts, drawnSegments) {
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++) {
+    const [x, y] = toScreen(pts[i][0], pts[i][1]);
+    if (i === 0) {
+      ctx.moveTo(x, y);
+    } else if (i <= drawnSegments) {
+      ctx.lineTo(x, y);
+    } else {
+      // 部分绘制最后一段
+      const frac = drawnSegments - (i - 1);
+      if (frac > 0) {
+        const [px, py] = toScreen(pts[i-1][0], pts[i-1][1]);
+        ctx.lineTo(px + (x - px) * frac, py + (y - py) * frac);
+      }
+      break;
+    }
+  }
+  ctx.stroke();
+}
+
+function drawNations() {
+  for (const n of NATIONS) {
+    if (currentYear < n.founded) continue;
+
+    const [x, y] = toScreen(n.lon, n.lat);
+    const isHovered  = hoveredNation  === n;
+    const isSelected = selectedNation === n;
+    const r = (isHovered || isSelected) ? 8 : 5;
+
+    if (isHovered || isSelected) {
+      ctx.beginPath();
+      ctx.arc(x, y, r + 6, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 213, 79, 0.2)';
+      ctx.fill();
+    }
+
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = (isHovered || isSelected) ? '#ffd54f' : '#ffb300';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // 放大或悬停时显示名称
+    if (view.scale > 3 || isHovered || isSelected) {
+      ctx.font = '12px "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.strokeText(n.name, x, y - r - 6);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(n.name, x, y - r - 6);
+    }
+  }
+}
+
+// ============================================================
+// 5. 交互
+// ============================================================
+
+// --- 滚轮缩放（以鼠标为中心） ---
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  const newScale = Math.max(0.5, Math.min(50, view.scale * factor));
+  const ratio = newScale / view.scale;
+
+  view.offsetX = mx - (mx - view.offsetX) * ratio;
+  view.offsetY = my - (my - view.offsetY) * ratio;
+  view.scale = newScale;
+  render();
+}, { passive: false });
+
+function zoomIn() {
+  const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+  const ratio = 1.3;
+  view.offsetX = cx - (cx - view.offsetX) * ratio;
+  view.offsetY = cy - (cy - view.offsetY) * ratio;
+  view.scale *= ratio;
+  render();
+}
+
+function zoomOut() {
+  const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+  const ratio = 1 / 1.3;
+  view.offsetX = cx - (cx - view.offsetX) * ratio;
+  view.offsetY = cy - (cy - view.offsetY) * ratio;
+  view.scale *= ratio;
+  render();
+}
+
+// --- 拖拽平移 + 悬停 ---
+let isDragging = false;
+let dragStart = { x:0, y:0, ox:0, oy:0 };
+
+canvas.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  canvas.classList.add('dragging');
+  dragStart = { x: e.clientX, y: e.clientY, ox: view.offsetX, oy: view.offsetY };
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (isDragging) {
+    view.offsetX = dragStart.ox + (e.clientX - dragStart.x);
+    view.offsetY = dragStart.oy + (e.clientY - dragStart.y);
+    render();
+    return;
+  }
+  // 悬停检测
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  let found = null;
+  for (const n of NATIONS) {
+    if (currentYear < n.founded) continue;
+    const [x, y] = toScreen(n.lon, n.lat);
+    if (Math.hypot(mx - x, my - y) < 12) { found = n; break; }
+  }
+  if (found !== hoveredNation) {
+    hoveredNation = found;
+    canvas.style.cursor = found ? 'pointer' : 'grab';
+    render();
+  }
+});
+
+window.addEventListener('mouseup', () => {
+  isDragging = false;
+  canvas.classList.remove('dragging');
+});
+
+// --- 点击选择国家 ---
+canvas.addEventListener('click', (e) => {
+  if (isDragging) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  for (const n of NATIONS) {
+    if (currentYear < n.founded) continue;
+    const [x, y] = toScreen(n.lon, n.lat);
+    if (Math.hypot(mx - x, my - y) < 12) {
+      showInfo(n);
+      return;
+    }
+  }
+  hideInfo();
+});
+
+function showInfo(n) {
+  selectedNation = n;
+  const panel = document.getElementById('infoPanel');
+  panel.innerHTML = `
+    <h2>${n.name}</h2>
+    <div class="row"><span class="label">首都</span><span>${n.capital || '—'}</span></div>
+    <div class="row"><span class="label">总人口</span><span>${n.population}</span></div>
+    <div class="row"><span class="label">使用语言</span><span>${n.language}</span></div>
+    <div class="row"><span class="label">发展状态</span><span>${n.status}</span></div>
+    <div class="row"><span class="label">坐标</span><span>${n.lon.toFixed(1)}°, ${n.lat.toFixed(1)}°</span></div>
+    <div class="row"><span class="label">建国年份</span><span>${
+      n.founded > 0 ? n.founded + '年' : '公元前' + (-n.founded) + '年'
+    }</span></div>
+  `;
+  panel.style.display = 'block';
+  render();
+}
+
+function hideInfo() {
+  selectedNation = null;
+  document.getElementById('infoPanel').style.display = 'none';
+  render();
+}
+
+// --- 时间轴 ---
+const yearSlider = document.getElementById('yearSlider');
+const yearLabel  = document.getElementById('yearLabel');
+
+yearSlider.addEventListener('input', () => {
+  currentYear = parseInt(yearSlider.value);
+  yearLabel.textContent = currentYear > 0
+    ? currentYear + '年'
+    : '公元前' + (-currentYear) + '年';
+  render();
+});
+
+// --- 触摸支持 ---
+let lastTouchDist = 0;
+
+canvas.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 1) {
+    isDragging = true;
+    dragStart = {
+      x: e.touches[0].clientX, y: e.touches[0].clientY,
+      ox: view.offsetX, oy: view.offsetY
+    };
+  } else if (e.touches.length === 2) {
+    lastTouchDist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+  }
+}, { passive: true });
+
+canvas.addEventListener('touchmove', (e) => {
+  if (e.touches.length === 1 && isDragging) {
+    view.offsetX = dragStart.ox + (e.touches[0].clientX - dragStart.x);
+    view.offsetY = dragStart.oy + (e.touches[0].clientY - dragStart.y);
+    render();
+  } else if (e.touches.length === 2) {
+    const dist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    const ratio = dist / lastTouchDist;
+    lastTouchDist = dist;
+    const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    view.offsetX = cx - (cx - view.offsetX) * ratio;
+    view.offsetY = cy - (cy - view.offsetY) * ratio;
+    view.scale *= ratio;
+    render();
+  }
+}, { passive: true });
+
+canvas.addEventListener('touchend', () => { isDragging = false; }, { passive: true });
+
+// ============================================================
+// 6. 启动
+// ============================================================
+window.addEventListener('resize', resize);
+resize();
+fitWorld();
+render();
+</script>
+</body>
+</html>
